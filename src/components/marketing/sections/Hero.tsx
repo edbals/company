@@ -11,7 +11,6 @@ import {
   Users,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { DEMO_PATH } from "../content";
 import { usePrefersReducedMotion, useStepPlayer } from "../hooks";
 import { CompanyAvatar, Eyebrow, ExampleNote, PhoneFrame } from "../primitives";
 import "./Hero.css";
@@ -132,9 +131,6 @@ export function Hero({ introPlayed = false }: { introPlayed?: boolean }) {
         <div className="hero-actions">
           <a className="m-button m-button--dark" href="#agents">
             Watch the agents work <ArrowDown size={19} aria-hidden />
-          </a>
-          <a className="m-button m-button--ghost" href={DEMO_PATH}>
-            Try demo <ArrowUpRight size={19} aria-hidden />
           </a>
         </div>
         <a className="m-text-link hero-rationale" href="/rationale">

@@ -36,13 +36,13 @@ const advance = (milliseconds: number) => {
 };
 
 describe("Hero", () => {
-  it("leads to the agent walkthrough and the demo page", () => {
+  it("leads to the agent walkthrough, with no demo button in the hero", () => {
     render(<Hero />);
     expect(screen.getByRole("link", { name: /Watch the agents work/ })).toHaveAttribute(
       "href",
       "#agents",
     );
-    expect(screen.getByRole("link", { name: /Try demo/ })).toHaveAttribute("href", "/demo");
+    expect(screen.queryByRole("link", { name: /Try demo/ })).toBeNull();
   });
 
   it("shows the first example as a plan waiting for a yes", () => {
@@ -116,7 +116,7 @@ describe("Hero", () => {
     const title = screen.getByRole("heading", { level: 1 });
     const hero = screen.getByRole("region", { name: /Company/ });
     const watch = screen.getByRole("link", { name: /Watch the agents work/ });
-    const start = screen.getByRole("link", { name: /Try demo/ });
+    const start = screen.getByRole("link", { name: /Design Rationale/ });
     fireEvent.mouseEnter(hero);
     fireEvent.focus(watch);
     fireEvent.mouseLeave(hero);

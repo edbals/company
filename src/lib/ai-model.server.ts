@@ -1,5 +1,5 @@
 // Server-only: one bounded model call, returning parsed JSON. Uses Claude directly when
-// ANTHROPIC_API_KEY is set (Vercel hosting); otherwise the Lovable AI gateway.
+// ANTHROPIC_API_KEY or GEMINI_API_KEY is set (Vercel hosting); otherwise the Lovable AI gateway.
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
 const CLAUDE_MODEL = "claude-haiku-5-5";
@@ -38,6 +38,30 @@ async function askClaude(key: string, instructions: string, payload: unknown, si
   return parseJson(text);
 }
 
+const GEMINI_MODEL = "gemini-3.8-flash";
+/** Gemini can think before answering, so it gets a little more time than the default budget. */
+const GEMINI_MIN_BUDGET_MS = 12000;
+const GEMINI_MAX_TOKENS = 8192;
+
+async function askGemini(key: string, instructions: string, payload: unknown, signal: AbortSignal): Promise<unknown> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+  const res = await fetch(url, {
+    method: "POST",
+    signal,
+    headers: { "content-type": "application/json", "x-goog-api-key": key },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: instructions }] },
+      contents: [{ role: "user", parts: [{ text: JSON.stringify(payload) }] }],
+      // Gemini spends output tokens on thinking first, so leave room for the answer too.
+      generationConfig: { responseMimeType: "application/json", maxOutputTokens: GEMINI_MAX_TOKENS },
+    }),
+  });
+  if (!res.ok) throw new Error(`Gemini request failed: ${res.status} ${(await res.text()).slice(0, 200)}`);
+  const body = (await res.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+  const text = (body.candidates?.[0]?.content?.parts ?? []).map((part) => part.text ?? "").join("");
+  return parseJson(text);
+}
+
 async function askLovable(instructions: string, payload: unknown, signal: AbortSignal): Promise<unknown> {
   const { generateResponse } = await import("@lovable.dev/ai-gateway");
   const res = await generateResponse(
@@ -55,10 +79,14 @@ async function askLovable(instructions: string, payload: unknown, signal: AbortS
 
 export async function askModel(instructions: string, payload: unknown, budgetMs = 5500): Promise<unknown> {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), budgetMs);
+  const usesGemini = !process.env["ANTHROPIC_API_KEY"] && !!process.env["GEMINI_API_KEY"];
+  const timer = setTimeout(() => ctrl.abort(), usesGemini ? Math.max(budgetMs, GEMINI_MIN_BUDGET_MS) : budgetMs);
   try {
-    const key = process.env['ANTHROPIC_API_KEY'];
-    return key ? await askClaude(key, instructions, payload, ctrl.signal) : await askLovable(instructions, payload, ctrl.signal);
+    const claude = process.env["ANTHROPIC_API_KEY"];
+    if (claude) return await askClaude(claude, instructions, payload, ctrl.signal);
+    const gemini = process.env["GEMINI_API_KEY"];
+    if (gemini) return await askGemini(gemini, instructions, payload, ctrl.signal);
+    return await askLovable(instructions, payload, ctrl.signal);
   } finally {
     clearTimeout(timer);
   }

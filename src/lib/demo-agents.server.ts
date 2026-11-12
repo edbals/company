@@ -176,7 +176,9 @@ export async function runDemoPlan(
   const blocked = blockedResult(input.words);
   if (blocked) return blocked;
   if (!(await takeDemoQuota(ip))) return fallbackPlan(input, now);
-  const events = sampleEvents(now);
+  // Hold every sample event on the day asked for, so the reply and the plan card agree.
+  const tz = safeTz(input.timezone);
+  const events = sampleEvents(now).map((event) => onRequestedDay(event, input.words, now, tz));
   try {
     const checkin = CheckinOut.parse(
       await askModel(CHECKIN, {
@@ -207,7 +209,7 @@ export async function runDemoPlan(
       ? chatResult(checkin.reply, "ai")
       : { ...fallback, source: "ai", reply: checkin.reply };
   } catch (err) {
-    console.error("demo agents failed:", err instanceof Error ? err.name : "error");
+    console.error("demo agents failed:", err instanceof Error ? err.message.slice(0, 300) : "error");
     return fallbackPlan(input, now);
   }
 }

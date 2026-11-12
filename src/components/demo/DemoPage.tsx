@@ -2,13 +2,13 @@ import { useCallback, useEffect, useRef } from "react";
 import { RotateCcw } from "lucide-react";
 import { SiteHeader } from "../marketing/SiteHeader";
 import { CompanyAvatar, ExampleNote, Eyebrow, PhoneFrame } from "../marketing/primitives";
-import { firstName } from "@/lib/demo-plan";
 import { AskStep } from "./AskStep";
 import { BehindScenes } from "./BehindScenes";
 import { BlockedStep, ErrorStep, FinishStep, ReminderStep, WorkingStep } from "./EndSteps";
 import { Onboarding } from "./Onboarding";
 import { FamilyStep, MemoryStep, PlanStep, QuestionStep, UndoStep } from "./PlanSteps";
-import { STAGES, stageOf } from "./demo-state";
+import { OptionsStep } from "./OptionsStep";
+import { STAGES, firstName, stageOf } from "./demo-state";
 import type { DemoAction, DemoState, Screen } from "./demo-state";
 import { useDemo } from "./use-demo";
 import "../marketing/landing.css";
@@ -21,6 +21,7 @@ const HEADINGS: Readonly<Record<Screen, string>> = {
   ask: "Tell Company",
   working: "The team is on it",
   error: "That didn’t work",
+  options: "Pick one",
   question: "One question",
   plan: "Your plan",
   undo: "Time to change your mind",
@@ -37,7 +38,7 @@ interface ScreenProps {
 }
 
 function CurrentStep({ state, dispatch }: ScreenProps) {
-  const plan = state.result?.outcome.kind === "plan" ? state.result.outcome : null;
+  const { plan } = state;
   switch (state.screen) {
     case "name":
     case "helper":
@@ -49,6 +50,8 @@ function CurrentStep({ state, dispatch }: ScreenProps) {
       return <WorkingStep state={state} />;
     case "error":
       return <ErrorStep state={state} dispatch={dispatch} />;
+    case "options":
+      return <OptionsStep state={state} dispatch={dispatch} />;
     case "question":
       return <QuestionStep state={state} dispatch={dispatch} />;
     case "plan":
@@ -56,7 +59,7 @@ function CurrentStep({ state, dispatch }: ScreenProps) {
     case "undo":
       return <UndoStep state={state} dispatch={dispatch} />;
     case "family":
-      return plan && <FamilyStep state={state} plan={plan} dispatch={dispatch} />;
+      return <FamilyStep state={state} dispatch={dispatch} />;
     case "memory":
       return plan && <MemoryStep plan={plan} dispatch={dispatch} />;
     case "reminder":

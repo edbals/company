@@ -39,6 +39,7 @@ export function ErrorStep({ state, dispatch }: EndStepProps) {
 export function ReminderStep({ state, dispatch }: EndStepProps) {
   const outcome = state.result?.outcome;
   if (outcome?.kind !== "reminder") return null;
+  const { helper } = state.profile;
   return (
     <>
       <p className="demo-bubble">{state.result?.reply}</p>
@@ -54,6 +55,14 @@ export function ReminderStep({ state, dispatch }: EndStepProps) {
         >
           Yes, remind me
         </button>
+        {outcome.helperRequest && helper && (
+          <button
+            className="m-button m-button--ghost"
+            onClick={() => dispatch({ type: "askHelper" })}
+          >
+            Also ask {helper.name}
+          </button>
+        )}
         <button
           className="m-button m-button--ghost"
           onClick={() => dispatch({ type: "reminder", yes: false })}
@@ -92,12 +101,9 @@ export function BlockedStep({ state, dispatch }: EndStepProps) {
 }
 
 function finishNote(state: DemoState): string {
-  if (state.memory === "kept") {
-    const outcome = state.result?.outcome;
-    return outcome?.kind === "plan" && outcome.memory ? `Kept: ${outcome.memory}` : "Kept.";
-  }
+  if (state.memory === "kept") return state.plan?.memory ? `Kept: ${state.plan.memory}` : "Kept.";
   if (state.memory === "skipped") return "Skipped. You choose what stays.";
-  if (state.result?.outcome.kind === "plan") return "Your plan is set, in this demo.";
+  if (state.plan) return "Your plan is set, in this demo.";
   return state.reminder ? "That’s how a reminder would look." : "No problem. Your choice.";
 }
 

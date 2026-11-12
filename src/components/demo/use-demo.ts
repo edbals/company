@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef } from "react";
-import { DemoProfile } from "@/lib/demo-plan";
+import { DEMO_HISTORY_MAX, DEMO_TURN_MAX, DemoProfile } from "@/lib/demo-contract";
+import type { DemoTurn } from "@/lib/demo-contract";
 import { planDemo } from "@/lib/demo.functions";
 import { demoReducer, initialState } from "./demo-state";
 import type { DemoAction, DemoState } from "./demo-state";
@@ -33,6 +34,14 @@ function timezone(): string {
   }
 }
 
+/** Keeps the turns sent to the server inside the contract's limits, so a long reply can't fail it. */
+function boundedHistory(history: readonly DemoTurn[]): DemoTurn[] {
+  return history
+    .slice(-DEMO_HISTORY_MAX)
+    .map((turn) => ({ who: turn.who, text: turn.text.slice(0, DEMO_TURN_MAX) }))
+    .filter((turn) => turn.text.trim());
+}
+
 /** Demo state plus its side effects: the planner call, the undo countdown and the saved profile. */
 export function useDemo(): [DemoState, (action: DemoAction) => void] {
   const [state, dispatch] = useReducer(demoReducer, null, () => initialState());
@@ -52,13 +61,20 @@ export function useDemo(): [DemoState, (action: DemoAction) => void] {
   useEffect(() => {
     if (state.screen !== "working") return;
     let live = true;
-    planDemo({ data: { profile: state.profile, words: state.words, timezone: timezone() } })
+    planDemo({
+      data: {
+        profile: state.profile,
+        words: state.words,
+        timezone: timezone(),
+        history: boundedHistory(state.history),
+      },
+    })
       .then((result) => live && dispatch({ type: "resolved", result }))
       .catch(() => live && dispatch({ type: "failed", message: ERROR_MESSAGE }));
     return () => {
       live = false;
     };
-  }, [state.screen, state.profile, state.words]);
+  }, [state.screen, state.profile, state.words, state.history]);
 
   useEffect(() => {
     if (state.screen !== "undo" || state.seconds === 0) return;

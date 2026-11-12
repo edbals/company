@@ -3,7 +3,7 @@ import { Check, Circle, ShieldCheck, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { AGENTS } from "../marketing/content";
 import { usePrefersReducedMotion } from "../marketing/hooks";
-import type { AgentStepId, TraceStep } from "@/lib/demo-plan";
+import type { AgentStepId, TraceStep } from "@/lib/demo-contract";
 import type { DemoState } from "./demo-state";
 
 interface Helper {

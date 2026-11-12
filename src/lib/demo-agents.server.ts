@@ -1,215 +1,398 @@
 // Server-only: runs Company's real agents for the public /demo. Nothing is read from or written to
 // anyone's account; events come from the sample list and the only stored thing is a quota counter.
-import { z } from "zod";
-import { askModel } from "./ai-model.server";
-import { prepareAgentDraft } from "./planning-agents.server";
-import { MEMORY_EXCLUDE, UNSAFE_PATTERN } from "./safety";
-import { safeTz } from "./plan-logic";
+// At most three sequential model round-trips: Check-in, then the specialists and Memory keeper in
+// parallel, then Coordinator. The reply is always derived from the final outcome, never mixed.
 import {
   DemoResult,
-  blockedResult,
+  blockedFor,
   chatResult,
+  demoContext,
+  errandItem,
   fallbackPlan,
-  firstName,
-  inferRide,
+  likedEvents,
   memoryFor,
-  onRequestedDay,
+  personalPlan,
   planOutcome,
+  reminderOutcome,
+  replyFor,
   rideLine,
-  sampleEvents,
+  safeMemory,
+  safetyLine,
+  skipped,
+  type DemoContext,
   type DemoInput,
-  type DemoRide,
+  type DemoOutcome,
+  type DemoPlan,
   type SampleEvent,
   type TraceStep,
 } from "./demo-plan";
+import { cleanHistory, isUnsafeText, titleFrom, tripTitle } from "./demo-words";
+import {
+  CHECKIN,
+  CHECKIN_BUDGET_MS,
+  COORDINATOR,
+  COORDINATOR_BUDGET_MS,
+  CheckinOut,
+  CoordinatorOut,
+  FAMILY,
+  FamilyOut,
+  MEMORY,
+  MemoryOut,
+  OUTINGS,
+  OUTINGS_OPTIONS,
+  OptionsOut,
+  OutingsOut,
+  RIDES,
+  RidesOut,
+  SPECIALIST_BUDGET_MS,
+  ask,
+  keepOrDrop,
+} from "./demo-specialists.server";
+import { takeDemoQuota } from "./demo-quota.server";
 
-const PER_VISITOR_PER_HOUR = 12;
-const GLOBAL_PER_DAY = 500;
-const HOUR_SECONDS = 3600;
-const DAY_SECONDS = 86400;
+export { takeDemoQuota };
 
-const CHECKIN = `You are Check-in, part of Company, a respectful planning companion for an older adult. Speak to them by first name.
-Return JSON only: {"reply": string, "kind": "outing"|"errand"|"chat", "eventIds": string[], "needs": string[]}.
-- reply: at most two short warm sentences at an easy reading level.
-- kind "outing" when they want to go or do something; eventIds = up to 3 ids from "events" that fit (consider "likes" when they are open-ended). Never invent ids.
-- kind "errand" when they need an item; needs = up to 2 short item names, e.g. "milk".
-- kind "chat" for greetings or anything unclear; ask one short question about what they'd like to do.
-- Never lecture about food, sleep or health. No medical advice or medication names. Never move money. Never claim anything is booked.`;
-
-const MEMORY = `You are Memory keeper. Suggest at most one short fact worth remembering to plan things this person enjoys next time.
-Return JSON only: {"fact": string|null}. Write it in third person using their first name, e.g. "Joe enjoys live jazz afternoons".
-Never include health, medication, food, sleep, money or anything judging ability. Return {"fact": null} if nothing is worth keeping.`;
-
-const CheckinOut = z.object({
-  reply: z.string().min(1).max(320),
-  kind: z.enum(["outing", "errand", "chat"]),
-  eventIds: z.array(z.string()).max(5),
-  needs: z.array(z.string().max(30)).max(2),
-});
-const MemoryOut = z.object({ fact: z.string().max(120).nullable() });
+const MAX_CHAT_SENTENCES = 2;
+const OPTION_CANDIDATES = 5;
+const MAX_OPTIONS = 3;
+/** Free AI text must never claim something happened that the demo cannot do. */
+const CLAIMS =
+  /\b(booked|reserved|ordered|delivered|confirmed|on (its|the) way|searched|live listings?|i(?:'ve| have) (?:sent|messaged|texted|called|arranged|asked|told))\b/i;
 
 const sentences = (text: string) => text.split(/(?<=[.!?])\s+/).filter(Boolean).length;
-const isSafeReply = (text: string) => sentences(text) <= 2 && !UNSAFE_PATTERN.test(text);
+export const isSafeChat = (text: string) =>
+  !!text && sentences(text) <= MAX_CHAT_SENTENCES && !isUnsafeText(text) && !CLAIMS.test(text);
 
-async function hashIp(ip: string): Promise<string> {
-  const bytes = await globalThis.crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(`company-demo:${ip}`),
-  );
-  return Array.from(new Uint8Array(bytes).slice(0, 12), (b) =>
-    b.toString(16).padStart(2, "0"),
-  ).join("");
+interface Run {
+  input: DemoInput;
+  ctx: DemoContext;
+  checkin: CheckinOut;
+  handoff: { words: string; history: ReturnType<typeof cleanHistory>; firstName: string };
 }
 
-/** Spends one AI call from the visitor's hourly and the site's daily budget. Any failure means no AI. */
-export async function takeDemoQuota(ip: string): Promise<boolean> {
-  try {
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const take = async (bucket: string, limit: number, window: number) => {
-      const { data, error } = await supabaseAdmin.rpc("take_voice_quota", {
-        _bucket: bucket,
-        _limit: limit,
-        _window_seconds: window,
-      });
-      if (error) console.error("demo quota check failed:", error.message);
-      return !error && data === true;
-    };
-    if (!(await take(`demo:ip:${await hashIp(ip)}`, PER_VISITOR_PER_HOUR, HOUR_SECONDS)))
-      return false;
-    return await take("demo:global", GLOBAL_PER_DAY, DAY_SECONDS);
-  } catch (err) {
-    console.error("demo quota unavailable:", err instanceof Error ? err.name : "error");
-    return false;
-  }
+const eventSummary = ({ id, title, place, starts_at, cost }: SampleEvent) => ({
+  id,
+  title,
+  place,
+  starts_at,
+  cost,
+});
+
+function checkinIsSafe(checkin: CheckinOut): boolean {
+  const fields = [checkin.title ?? "", checkin.place ?? "", ...checkin.needs];
+  if (fields.some(isUnsafeText)) return false;
+  return checkin.kind !== "chat" || isSafeChat(checkin.reply);
 }
 
-async function suggestMemory(input: DemoInput, event: SampleEvent): Promise<string | null> {
-  try {
-    const out = MemoryOut.parse(
-      await askModel(
-        MEMORY,
-        {
-          firstName: firstName(input.profile),
-          said: input.words,
-          event: event.title,
-          likes: input.profile.likes,
-        },
-        4000,
-      ),
-    );
-    const fact = out.fact?.trim();
-    if (fact && !MEMORY_EXCLUDE.test(fact) && !UNSAFE_PATTERN.test(fact)) return fact;
-  } catch {
-    // Fall through to the rule-based suggestion below.
-  }
-  return memoryFor(input.profile, event);
+function aiResult(
+  outcome: Exclude<DemoOutcome, { kind: "chat" }>,
+  steps: TraceStep[],
+  run: Run,
+): DemoResult | null {
+  if (isUnsafeText(JSON.stringify(outcome))) return null;
+  return { source: "ai", reply: replyFor(outcome, run.ctx.profile), steps, outcome };
 }
 
-function rideFrom(draftRide: DemoRide | undefined, input: DemoInput): DemoRide {
-  if (draftRide === "family" && !input.profile.helper) return "undecided";
-  return draftRide ?? inferRide(input.words, input.profile);
+function familyLine(run: Run, ran: boolean, drafted: boolean): TraceStep {
+  const helper = run.ctx.profile.helper;
+  if (!helper || !ran)
+    return { agent: "family", status: "skipped", line: "No helper added, so nothing to send." };
+  return drafted
+    ? { agent: "family", status: "done", line: `Drafted one clear request for ${helper.name}.` }
+    : { agent: "family", status: "done", line: `Decided not to ask ${helper.name}.` };
 }
 
-async function outingPlan(
-  input: DemoInput,
-  reply: string,
-  eventIds: string[],
-  events: SampleEvent[],
-  now: Date,
-): Promise<DemoResult | null> {
-  const candidates = events.filter((event) => eventIds.includes(event.id));
-  if (!candidates.length) return null;
-  const words = input.profile.helper
-    ? `${input.words} (My helper is ${input.profile.helper.name}.)`
-    : input.words;
-  const draft = await prepareAgentDraft(words, { reply, eventIds }, candidates);
-  const chosen = candidates.find((c) => c.id === draft?.eventId) ?? candidates[0]!;
-  const event = onRequestedDay(chosen, input.words, now, safeTz(input.timezone));
-  const ride = rideFrom(draft?.ride, input);
-  const memory = await suggestMemory(input, event);
-  const helper = input.profile.helper;
-  const steps: TraceStep[] = [
-    { agent: "checkin", status: "done", line: "Understood an outing wish." },
-    { agent: "outings", status: "done", line: `Picked ${event.title} from the sample events.` },
-    { agent: "rides", status: "done", line: rideLine(ride, input.profile) },
-    {
-      agent: "family",
-      status: helper ? "done" : "skipped",
-      line: helper
-        ? `Drafted one clear request for ${helper.name}.`
-        : "No helper added, so nothing to send.",
-    },
+interface Specialists {
+  eventId: string | null;
+  ride: CoordinatorOut["ride"];
+  family: CoordinatorOut["family"];
+  memory: string | null;
+  memoryAnswered: boolean;
+}
+
+/** Round-trip 2: Outings, Rides, Family circle and Memory keeper together. Null if one fails. */
+async function askSpecialists(run: Run, candidates: SampleEvent[]): Promise<Specialists | null> {
+  const { handoff, ctx } = run;
+  const title = run.checkin.title;
+  const [outing, ride, family, memory] = await Promise.all([
+    candidates.length
+      ? ask(
+          OutingsOut,
+          OUTINGS,
+          { ...handoff, candidates: candidates.map(eventSummary) },
+          SPECIALIST_BUDGET_MS,
+        )
+      : Promise.resolve({ eventId: null }),
+    ask(
+      RidesOut,
+      RIDES,
+      { ...handoff, helper: ctx.profile.helper?.name ?? null },
+      SPECIALIST_BUDGET_MS,
+    ),
+    ctx.profile.helper
+      ? ask(
+          FamilyOut,
+          FAMILY,
+          { ...handoff, kind: "plan", helper: ctx.profile.helper },
+          SPECIALIST_BUDGET_MS,
+        )
+      : Promise.resolve({ family: "none" as const }),
+    ask(
+      MemoryOut,
+      MEMORY,
+      { ...handoff, likes: ctx.profile.likes, title, candidates: candidates.map((c) => c.title) },
+      SPECIALIST_BUDGET_MS,
+    ),
+  ]);
+  if (!outing || !ride || !family) return null;
+  const eventId = candidates.some((c) => c.id === outing.eventId) ? outing.eventId : null;
+  const rideChoice = ride.ride === "family" && !ctx.profile.helper ? "undecided" : ride.ride;
+  return {
+    eventId,
+    ride: rideChoice,
+    family: family.family,
+    memory: safeMemory(memory?.fact),
+    memoryAnswered: !!memory,
+  };
+}
+
+function planSteps(run: Run, plan: DemoPlan, found: Specialists, dropped: number): TraceStep[] {
+  const ranOutings = run.checkin.eventIds.length > 0;
+  return [
+    { agent: "checkin", status: "done", line: "Understood something you want to do." },
+    ranOutings
+      ? {
+          agent: "outings",
+          status: "done",
+          line:
+            plan.origin === "sample"
+              ? `Picked ${plan.title} from the sample events.`
+              : "No sample event fits; kept your own plan.",
+        }
+      : { agent: "outings", status: "skipped", line: "Your own plan, so no sample event." },
+    { agent: "rides", status: "done", line: rideLine(plan.ride, run.ctx.profile) },
+    familyLine(run, !!run.ctx.profile.helper, !!plan.helperRequest),
     {
       agent: "coordinator",
       status: "done",
-      line: draft
-        ? "Kept only what the specialists suggested."
-        : "Used the best match; nothing new added.",
+      line: dropped
+        ? `Dropped ${dropped} suggestion(s); added nothing.`
+        : "Kept only what the specialists suggested.",
+    },
+    { agent: "safety", status: "done", line: safetyLine(plan) },
+    found.memoryAnswered
+      ? {
+          agent: "memory",
+          status: "done",
+          line: plan.memory ? "Suggests one thing to remember." : "Nothing worth keeping.",
+        }
+      : {
+          agent: "memory",
+          status: "skipped",
+          line: "Didn't answer in time, so nothing to remember.",
+        },
+  ];
+}
+
+function buildPlan(run: Run, kept: CoordinatorOut, candidates: SampleEvent[]): DemoPlan | null {
+  const { ctx, checkin } = run;
+  const event = candidates.find((c) => c.id === kept.eventId);
+  const offerHelper = kept.family === "ride";
+  if (event)
+    return planOutcome({
+      profile: ctx.profile,
+      event,
+      ride: kept.ride,
+      tz: ctx.tz,
+      memory: kept.memory,
+      offerHelper,
+    });
+  const booking = ctx.booking || checkin.wantsBooking;
+  const base = ctx.request.base;
+  const title = checkin.title || (booking ? tripTitle(base) : titleFrom(base));
+  if (!title) return null;
+  return personalPlan({
+    profile: ctx.profile,
+    title,
+    place: checkin.place || null,
+    dayOffset: ctx.dayOffset,
+    time: ctx.time,
+    ride: kept.ride,
+    memory: kept.memory,
+    booking,
+    offerHelper,
+    now: ctx.now,
+    tz: ctx.tz,
+  });
+}
+
+async function planFlow(run: Run): Promise<DemoResult | null> {
+  const ids = run.checkin.eventIds;
+  const candidates = run.ctx.events.filter((event) => ids.includes(event.id)).slice(0, MAX_OPTIONS);
+  const found = await askSpecialists(run, candidates);
+  if (!found) return null;
+  const options: CoordinatorOut = {
+    eventId: found.eventId,
+    ride: found.ride,
+    family: found.family,
+    memory: found.memory,
+  };
+  const chosen = await ask(
+    CoordinatorOut,
+    COORDINATOR,
+    { ...run.handoff, options },
+    COORDINATOR_BUDGET_MS,
+  );
+  if (!chosen) return null;
+  const kept = keepOrDrop(options, chosen);
+  const dropped = (Object.keys(options) as (keyof CoordinatorOut)[]).filter(
+    (key) => options[key] !== kept[key],
+  ).length;
+  const plan = buildPlan(run, kept, candidates);
+  return plan && aiResult(plan, planSteps(run, plan, found, dropped), run);
+}
+
+function optionsSteps(count: number): TraceStep[] {
+  return [
+    { agent: "checkin", status: "done", line: "Understood an open wish." },
+    {
+      agent: "outings",
+      status: "done",
+      line: `Chose ${count} sample events for you to pick from.`,
+    },
+    ...skipped(["rides", "family"], "Waits until you pick one."),
+    {
+      agent: "coordinator",
+      status: "skipped",
+      line: "Only one specialist answered; nothing to combine.",
     },
     { agent: "safety", status: "done", line: "Checked cost and timing. Rules, not AI." },
     {
       agent: "memory",
-      status: memory ? "done" : "skipped",
-      line: memory ? "Suggests one thing to remember." : "Nothing worth keeping.",
+      status: "skipped",
+      line: "Not asked; a simple rule suggests a memory once you pick.",
     },
   ];
-  return {
-    source: "ai",
-    reply,
-    steps,
-    outcome: planOutcome({
-      profile: input.profile,
-      event,
-      ride,
-      tz: safeTz(input.timezone),
-      memory,
-    }),
-  };
 }
 
-/** Real agents first; any refusal, invalid output or missing key falls back to the keyword planner. */
+async function optionsFlow(run: Run): Promise<DemoResult | null> {
+  const { ctx, checkin } = run;
+  const chosenIds = new Set([
+    ...checkin.eventIds,
+    ...likedEvents(ctx, OPTION_CANDIDATES).map((e) => e.id),
+  ]);
+  const candidates = ctx.events
+    .filter((event) => chosenIds.has(event.id))
+    .slice(0, OPTION_CANDIDATES);
+  const picked = await ask(
+    OptionsOut,
+    OUTINGS_OPTIONS,
+    { ...run.handoff, likes: ctx.profile.likes, candidates: candidates.map(eventSummary) },
+    SPECIALIST_BUDGET_MS,
+  );
+  if (!picked) return null;
+  const events = [...new Set(picked.eventIds)]
+    .map((id) => candidates.find((event) => event.id === id))
+    .filter((event): event is SampleEvent => !!event)
+    .slice(0, MAX_OPTIONS);
+  if (!events.length) return null;
+  const options = events.map((event) =>
+    planOutcome({
+      profile: ctx.profile,
+      event,
+      ride: ctx.ride,
+      tz: ctx.tz,
+      memory: memoryFor(ctx.profile, event),
+    }),
+  );
+  return aiResult({ kind: "options", options }, optionsSteps(events.length), run);
+}
+
+async function errandFlow(run: Run): Promise<DemoResult | null> {
+  const { ctx, checkin } = run;
+  const item =
+    checkin.needs.find((need) => need && !isUnsafeText(need)) ??
+    errandItem(ctx.request.base, ctx.events);
+  if (!item) return null;
+  const helper = ctx.profile.helper;
+  const family = helper
+    ? await ask(
+        FamilyOut,
+        FAMILY,
+        { ...run.handoff, kind: "errand", item, helper },
+        SPECIALIST_BUDGET_MS,
+      )
+    : { family: "none" as const };
+  if (!family) return null;
+  const outcome = reminderOutcome(ctx.profile, item, family.family === "ride");
+  const steps: TraceStep[] = [
+    { agent: "checkin", status: "done", line: `Understood a need: ${item}.` },
+    ...skipped(["outings", "rides"]),
+    familyLine(run, !!helper, !!outcome.helperRequest),
+    {
+      agent: "coordinator",
+      status: "skipped",
+      line: "Only one specialist answered; nothing to combine.",
+    },
+    { agent: "safety", status: "done", line: safetyLine(outcome) },
+    { agent: "memory", status: "skipped", line: "One-off errands aren't kept." },
+  ];
+  return aiResult(outcome, steps, run);
+}
+
+/** Round-trip 1: Check-in sorts the request. Then the matching flow runs. Null means "use rules". */
+async function runAgents(input: DemoInput, now: Date): Promise<DemoResult | null> {
+  const ctx = demoContext(input, now);
+  const history = cleanHistory(input.history);
+  const checkin = await ask(
+    CheckinOut,
+    CHECKIN,
+    {
+      firstName: ctx.name,
+      likes: ctx.profile.likes,
+      helper: ctx.profile.helper,
+      timezone: ctx.tz,
+      now: now.toISOString(),
+      events: ctx.events.map(eventSummary),
+      history,
+      words: input.words,
+    },
+    CHECKIN_BUDGET_MS,
+  );
+  if (!checkin || !checkinIsSafe(checkin)) return null;
+  const valid = {
+    ...checkin,
+    eventIds: checkin.eventIds.filter((id) => ctx.events.some((e) => e.id === id)),
+  };
+  const run: Run = {
+    input,
+    ctx,
+    checkin: valid,
+    handoff: { words: input.words, history, firstName: ctx.name },
+  };
+  if (valid.kind === "chat") return chatResult(valid.reply, "ai");
+  if (valid.kind === "errand") return errandFlow(run);
+  if (valid.kind === "options") return optionsFlow(run);
+  return planFlow(run);
+}
+
+/** Rules first, then real agents; any refusal, invalid output or quota miss uses the full fallback. */
 export async function runDemoPlan(
   input: DemoInput,
   ip: string,
   now: Date = new Date(),
 ): Promise<DemoResult> {
-  const blocked = blockedResult(input.words);
+  const blocked = blockedFor(input);
   if (blocked) return blocked;
   if (!(await takeDemoQuota(ip))) return fallbackPlan(input, now);
-  // Hold every sample event on the day asked for, so the reply and the plan card agree.
-  const tz = safeTz(input.timezone);
-  const events = sampleEvents(now).map((event) => onRequestedDay(event, input.words, now, tz));
   try {
-    const checkin = CheckinOut.parse(
-      await askModel(CHECKIN, {
-        firstName: firstName(input.profile),
-        likes: input.profile.likes,
-        helper: input.profile.helper,
-        timezone: safeTz(input.timezone),
-        now: now.toISOString(),
-        events: events.map(({ id, title, place, starts_at, cost }) => ({
-          id,
-          title,
-          place,
-          starts_at,
-          cost,
-        })),
-        words: input.words,
-      }),
-    );
-    if (!isSafeReply(checkin.reply)) return fallbackPlan(input, now);
-    const ids = checkin.eventIds.filter((id) => events.some((e) => e.id === id)).slice(0, 3);
-    if (checkin.kind === "outing") {
-      const plan = await outingPlan(input, checkin.reply, ids, events, now);
-      if (plan) return DemoResult.parse(plan);
-    }
-    if (checkin.kind === "chat") return chatResult(checkin.reply, "ai");
-    const fallback = fallbackPlan(input, now);
-    return fallback.outcome.kind === "chat"
-      ? chatResult(checkin.reply, "ai")
-      : { ...fallback, source: "ai", reply: checkin.reply };
+    const result = await runAgents(input, now);
+    if (result) return DemoResult.parse(result);
   } catch (err) {
-    console.error("demo agents failed:", err instanceof Error ? err.message.slice(0, 300) : "error");
-    return fallbackPlan(input, now);
+    console.error(
+      "demo agents failed:",
+      err instanceof Error ? err.message.slice(0, 300) : "error",
+    );
   }
+  return fallbackPlan(input, now);
 }

@@ -40,7 +40,7 @@ async function askClaude(key: string, instructions: string, payload: unknown, si
 
 const GEMINI_MODEL = "gemini-3.8-flash";
 /** Gemini can think before answering, so it gets a little more time than the default budget. */
-const GEMINI_MIN_BUDGET_MS = 12000;
+const GEMINI_MIN_BUDGET_MS = 8000;
 const GEMINI_MAX_TOKENS = 8192;
 
 async function askGemini(key: string, instructions: string, payload: unknown, signal: AbortSignal): Promise<unknown> {

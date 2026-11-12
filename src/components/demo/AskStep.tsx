@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import type { FormEvent } from "react";
-import { DEMO_WORDS_MAX, firstName } from "@/lib/demo-plan";
+import { DEMO_WORDS_MAX } from "@/lib/demo-contract";
+import { firstName } from "./demo-state";
 import type { DemoAction, DemoState } from "./demo-state";
 
 const EXAMPLES = [
@@ -20,16 +21,26 @@ export function AskStep({ state, dispatch }: AskStepProps) {
   const id = useId();
   const hintId = useId();
   const [words, setWords] = useState("");
-  const chat = state.result?.outcome.kind === "chat" ? state.result.reply : null;
+  const isChat = state.result?.outcome.kind === "chat";
+  const chat = isChat ? state.history.slice(-2) : [];
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (words.trim()) dispatch({ type: "submit", words: words.trim() });
   };
   return (
     <form className="demo-form" onSubmit={submit}>
-      {chat && <p className="demo-bubble">{chat}</p>}
+      {chat.map((turn, index) => (
+        <p
+          key={index}
+          className={turn.who === "person" ? "demo-bubble demo-bubble--you" : "demo-bubble"}
+        >
+          {turn.text}
+        </p>
+      ))}
       <label htmlFor={id}>
-        {chat ? "Your answer" : `${firstName(state.profile)}, what would you like to do this week?`}
+        {isChat
+          ? "Your answer"
+          : `${firstName(state.profile)}, what would you like to do this week?`}
       </label>
       <textarea
         data-autofocus
@@ -45,7 +56,7 @@ export function AskStep({ state, dispatch }: AskStepProps) {
       <p id={hintId} className="demo-hint">
         {words.length}/{DEMO_WORDS_MAX}
       </p>
-      {!chat && (
+      {!isChat && (
         <div className="demo-examples" role="group" aria-label="Examples to try">
           {EXAMPLES.map((example) => (
             <button

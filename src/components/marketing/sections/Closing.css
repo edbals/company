@@ -1,0 +1,64 @@
+.closing {
+  display: grid;
+  justify-items: center;
+  gap: 24px;
+  padding-block: clamp(24px, 5vw, 64px);
+  text-align: center;
+}
+.closing-title {
+  max-width: 14em;
+  margin: 0;
+  font-size: clamp(40px, 6vw, 76px);
+  text-wrap: balance;
+}
+.closing-title span {
+  display: block;
+}
+.closing-lead {
+  max-width: 34em;
+  margin: 0;
+}
+.closing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 20px 32px;
+}
+
+.closing {
+  position: relative;
+  isolation: isolate;
+  padding-block: clamp(56px, 8vw, 104px);
+}
+/* Sun and bear share one box and are both centred in it, so they always line up. */
+.closing-art {
+  display: grid;
+  place-items: center;
+  width: 260px;
+  height: 260px;
+  margin-bottom: 8px;
+}
+.closing-art > * {
+  grid-area: 1 / 1;
+}
+.closing-art .closing-sun {
+  position: static;
+  width: 100%;
+  height: 100%;
+  color: var(--m-amber);
+  opacity: 0.85;
+  transform: none;
+  z-index: 0;
+}
+.closing-art .closing-avatar {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+}
+@media (max-width: 760px) {
+  .closing-art {
+    width: 200px;
+    height: 200px;
+  }
+}

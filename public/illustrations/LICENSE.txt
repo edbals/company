@@ -1,0 +1,2 @@
+Illustrations: Open Peeps by Pablo Stanley (https://www.openpeeps.com), CC0 public domain.
+Files: joe.svg = peep-99, maya.svg = peep-96, elena.svg = peep-78. Recoloured from black to #0D2C45.

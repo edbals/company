@@ -1,0 +1,68 @@
+.tech-heading {
+  display: grid;
+  gap: 22px;
+  max-width: 860px;
+}
+.tech-heading .m-eyebrow {
+  color: var(--m-muted);
+}
+.tech-choices-group {
+  display: grid;
+  gap: 24px;
+}
+.tech-choices {
+  display: grid;
+  gap: 20px;
+  padding: 0;
+  list-style: none;
+  font-size: 18px;
+  line-height: 1.6;
+  color: var(--m-muted);
+}
+.tech-choices strong {
+  color: var(--m-text);
+}
+.tech-stack {
+  line-height: 1.8;
+}
+.tech-honest {
+  max-width: 60ch;
+}
+
+@media (min-width: 1001px) {
+  .tech > .m-container {
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    column-gap: clamp(48px, 7vw, 112px);
+    align-items: start;
+  }
+  .tech .tech-heading,
+  .tech .tech-stack,
+  .tech .tech-honest {
+    grid-column: 1;
+  }
+  .tech .tech-choices-group {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+    padding-top: 12px;
+  }
+}
+.tech-choices {
+  gap: 28px;
+  counter-reset: choice;
+}
+.tech-choices li {
+  position: relative;
+  padding-left: 64px;
+  counter-increment: choice;
+}
+.tech-choices li::before {
+  content: counter(choice);
+  content: counter(choice) / "";
+  position: absolute;
+  top: -6px;
+  left: 0;
+  font-family: "Newsreader", Georgia, serif;
+  font-size: 44px;
+  line-height: 1;
+  color: var(--m-amber);
+}

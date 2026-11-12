@@ -1,0 +1,16 @@
+/* The character video has a light grey square background. A circle crop turns it into a clean
+   avatar bubble; the slight zoom keeps the character filling the circle. */
+.m-avatar--media {
+  object-fit: cover;
+  object-position: 50% 58%;
+  background: #eceae6;
+  box-shadow:
+    0 0 0 3px var(--m-paper),
+    0 0.12em 0.4em #0d2c4524;
+  pointer-events: none;
+}
+.m-avatar--inline.m-avatar--media {
+  --m-avatar-size: 1.05em;
+  margin: 0 0.04em 0.06em;
+  vertical-align: -0.12em;
+}
